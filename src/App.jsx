@@ -63,7 +63,13 @@ const MODES = [
 ];
 
 async function callGeminiForPromptBuilder({ userQuery, targetPlatform, mode, language, styleModifier = null }) {
-  const apiKey = ""; // Nanti Anda bisa isi API Key Gemini di sini
+  // KODE DIPERBARUI: Sekarang aplikasi akan mengambil Kunci API dari brankas rahasia Vercel
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
+  
+  if (!apiKey) {
+    throw new Error("API Key tidak ditemukan di brankas Vercel");
+  }
+
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
 
   const systemInstruction = `
@@ -113,6 +119,7 @@ Kembalikan respon DALAM FORMAT JSON SAJA dengan skema:
     throw new Error("Invalid response format");
   } catch (error) {
     console.warn("Using intelligent fallback generator:", error);
+    await new Promise(resolve => setTimeout(resolve, 1500));
     return fallbackPromptGenerator(userQuery, targetPlatform, mode, language, styleModifier);
   }
 }
@@ -360,7 +367,7 @@ export default function App() {
       };
       setHistory((prev) => [historyItem, ...prev.slice(0, 24)]);
     } catch (err) {
-      showToast("Gagal memproses prompt. Silakan coba lagi.");
+      showToast("Gagal memproses prompt. Memori cadangan digunakan.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -604,24 +611,6 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="mt-8 pt-8">
-                <p className="text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2 mb-4">Butuh Inspirasi?</p>
-                <div className="flex flex-wrap gap-3">
-                  {SAMPLE_QUERIES.map((q, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        setInputQuery(q);
-                        handleGenerate(q);
-                      }}
-                      className={`px-5 py-2.5 text-xs font-semibold ${clayPill} hover:scale-105 active:scale-95 transition-transform`}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
             </div>
 
             {analysisResult && (
@@ -681,113 +670,12 @@ export default function App() {
                       </div>
                     </div>
                   )}
-
-                  <div className={`p-6 ${clayCard}`}>
-                    <h4 className="font-bold text-lg mb-6 flex items-center gap-2">
-                      <Sparkles className="w-5 h-5 text-orange-500" /> Analisis AI
-                    </h4>
-                    <div className="space-y-6">
-                      <div className={`p-4 rounded-2xl ${theme === 'dark' ? 'bg-[#0f172a] shadow-[inset_2px_2px_4px_rgba(0,0,0,0.4)]' : 'bg-[#e2e8f0] shadow-[inset_2px_2px_4px_rgba(0,0,0,0.06)]'}`}>
-                        <span className="text-xs font-semibold text-slate-500 block mb-1">Kategori Terdeteksi</span>
-                        <p className="font-semibold">{getCategoryInfo(analysisResult.category).label}</p>
-                      </div>
-                      <div className={`p-4 rounded-2xl ${theme === 'dark' ? 'bg-[#0f172a] shadow-[inset_2px_2px_4px_rgba(0,0,0,0.4)]' : 'bg-[#e2e8f0] shadow-[inset_2px_2px_4px_rgba(0,0,0,0.06)]'}`}>
-                        <span className="text-xs font-semibold text-slate-500 block mb-1">Gaya Optimal</span>
-                        <p className="font-semibold">{analysisResult.detectedStyle || '-'}</p>
-                      </div>
-                    </div>
-                  </div>
-
                 </div>
               </div>
             )}
           </div>
         )}
-
-        {activeTab === 'history' && (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <div className="flex justify-between items-center px-4">
-              <h2 className="text-3xl font-bold tracking-tight">Riwayat</h2>
-              {history.length > 0 && (
-                <button
-                  onClick={() => { setHistory([]); showToast("Riwayat dibersihkan"); }}
-                  className={`px-5 py-2.5 text-sm text-red-500 ${clayBtn}`}
-                >
-                  Bersihkan
-                </button>
-              )}
-            </div>
-
-            {history.length === 0 ? (
-              <div className={`p-10 text-center ${clayCard}`}>
-                <p className="font-semibold text-lg text-slate-500">Belum ada riwayat prompt.</p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                {history.map((item) => (
-                  <div key={item.id} className={`p-6 sm:p-8 ${clayCard}`}>
-                    <div className="flex justify-between items-start mb-6 gap-4">
-                      <div>
-                        <h4 className="font-bold text-xl">{item.title}</h4>
-                        <span className="text-xs font-semibold mt-2 inline-block px-3 py-1 rounded-full bg-orange-500/10 text-orange-500">
-                          {item.platform} • {item.timestamp}
-                        </span>
-                      </div>
-                      <div className="flex gap-3">
-                        <button onClick={() => { copyToClipboard(item.prompt); showToast("Prompt disalin! ✓"); }} className={`w-10 h-10 flex items-center justify-center ${clayPill}`}><Copy className="w-4 h-4 text-slate-500"/></button>
-                        <button onClick={() => { setInputQuery(item.title); setEditablePrompt(item.prompt); setActiveTab('builder'); }} className={`w-10 h-10 flex items-center justify-center ${clayPill}`}><Pencil className="w-4 h-4 text-orange-500"/></button>
-                      </div>
-                    </div>
-                    <pre className={`p-5 font-mono text-sm whitespace-pre-wrap max-h-48 overflow-auto ${clayInput}`}>
-                      {item.prompt}
-                    </pre>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'favorites' && (
-          <div className="max-w-5xl mx-auto space-y-8">
-            <div className="px-4">
-              <h2 className="text-3xl font-bold tracking-tight">Favorit</h2>
-            </div>
-
-            {favorites.length === 0 ? (
-              <div className={`p-10 text-center ${clayCard}`}>
-                <p className="font-semibold text-lg text-slate-500">Belum ada prompt yang disimpan.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {favorites.map((item) => (
-                  <div key={item.id} className={`p-6 sm:p-8 flex flex-col ${clayCard}`}>
-                    <div className="flex justify-between items-start mb-6 gap-3">
-                      <h4 className="font-bold text-lg leading-tight line-clamp-2">{item.title}</h4>
-                      <button onClick={() => toggleFavorite(item)} className={`w-10 h-10 shrink-0 flex items-center justify-center ${clayPill} text-red-500`}><Trash2 className="w-4 h-4"/></button>
-                    </div>
-                    <pre className={`p-5 font-mono text-xs whitespace-pre-wrap max-h-40 overflow-auto mb-6 ${clayInput}`}>
-                      {item.prompt}
-                    </pre>
-                    <button
-                      onClick={() => { copyToClipboard(item.prompt); showToast("Prompt disalin! ✓"); }}
-                      className={`w-full py-4 mt-auto text-sm ${clayBtnPrimary}`}
-                    >
-                      <Copy className="w-5 h-5" /> Copy Prompt
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
       </main>
-
-      <footer className="py-10 text-center font-semibold text-slate-500">
-        <p>Goprompt &copy; 2026</p>
-      </footer>
-
     </div>
   );
 }
