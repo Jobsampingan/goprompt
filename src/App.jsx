@@ -38,13 +38,6 @@ const CATEGORIES = {
   GENERAL: { label: 'General / Custom', icon: Layers, color: 'bg-slate-500/10 text-slate-400 border-slate-500/20' }
 };
 
-const SAMPLE_QUERIES = [
-  "Foto produk estetik dengan studio lighting",
-  "Caption promosi Instagram & copywriting jualan",
-  "Landing page modern & responsif untuk website",
-  "Pitch deck presentasi ide bisnis & startup"
-];
-
 const PLATFORMS = [
   { id: 'Universal', name: 'Universal AI' },
   { id: 'ChatGPT', name: 'ChatGPT / OpenAI' },
@@ -63,14 +56,15 @@ const MODES = [
 ];
 
 async function callGeminiForPromptBuilder({ userQuery, targetPlatform, mode, language, styleModifier = null }) {
-  // KODE DIPERBARUI: Sekarang aplikasi akan mengambil Kunci API dari brankas rahasia Vercel
+  // Mengambil Kunci API dari brankas rahasia Vercel
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
   
-  if (!apiKey) {
-    throw new Error("API Key tidak ditemukan di brankas Vercel");
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error("Kunci VITE_GEMINI_API_KEY kosong di Vercel");
   }
 
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+  // Menggunakan model gemini-1.5-flash yang paling stabil dan cepat
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
   const systemInstruction = `
 Kamu adalah AI Expert Prompt Engineer untuk "Goprompt".
@@ -105,23 +99,31 @@ Kembalikan respon DALAM FORMAT JSON SAJA dengan skema:
     generationConfig: { responseMimeType: "application/json" }
   };
 
-  try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 
-    if (!response.ok) throw new Error(`API Error: ${response.status}`);
-    const data = await response.json();
-    const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (jsonText) return JSON.parse(jsonText);
-    throw new Error("Invalid response format");
-  } catch (error) {
-    console.warn("Using intelligent fallback generator:", error);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    return fallbackPromptGenerator(userQuery, targetPlatform, mode, language, styleModifier);
+  if (!response.ok) {
+      const errorData = await response.text();
+      console.error("Gemini API Error Detail:", errorData);
+      throw new Error(`Ditolak API (Status ${response.status})`);
   }
+  
+  const data = await response.json();
+  const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  
+  if (jsonText) {
+    try {
+      const parsedData = JSON.parse(jsonText);
+      parsedData._source = 'API_GEMINI'; 
+      return parsedData;
+    } catch (parseErr) {
+      throw new Error("Format JSON dari AI tidak valid");
+    }
+  }
+  throw new Error("Respon AI kosong");
 }
 
 function fallbackPromptGenerator(userQuery, platform, mode, language, styleModifier) {
@@ -273,7 +275,8 @@ Instruksi Tambahan: Gunakan format yang mudah dibaca secara cepat (scannable), g
     targetAudience: 'Audiens Spesifik / Teridentifikasi',
     missingDetails,
     placeholders,
-    generatedPrompt
+    generatedPrompt,
+    _source: 'OFFLINE_FALLBACK'
   };
 }
 
@@ -296,6 +299,19 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState(null);
   const [isCopied, setIsCopied] = useState(false);
 
+  useEffect(() => {
+    localStorage.setItem('upb_history_v2', JSON.stringify(history));
+  }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem('upb_favorites_v2', JSON.stringify(favorites));
+  }, [favorites]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 5000); // 5 detik agar cukup waktu membaca error
+  };
+
   const copyToClipboard = (text) => {
     const textArea = document.createElement("textarea");
     textArea.value = text;
@@ -313,19 +329,6 @@ export default function App() {
     document.body.removeChild(textArea);
   };
 
-  useEffect(() => {
-    localStorage.setItem('upb_history_v2', JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    localStorage.setItem('upb_favorites_v2', JSON.stringify(favorites));
-  }, [favorites]);
-
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
-
   const handleGenerate = async (customQuery = null, styleOverride = null) => {
     const queryToUse = customQuery || inputQuery;
     if (!queryToUse.trim()) {
@@ -337,6 +340,7 @@ export default function App() {
     setIsCopied(false);
 
     try {
+      // Panggil AI (Akan error jika API belum terbaca oleh Vercel)
       const res = await callGeminiForPromptBuilder({
         userQuery: queryToUse,
         targetPlatform: selectedPlatform,
@@ -347,6 +351,7 @@ export default function App() {
 
       setAnalysisResult(res);
       setEditablePrompt(res.generatedPrompt);
+      showToast("✅ Berhasil! Prompt diracik langsung oleh AI Gemini 🚀");
 
       const initialPlaceholders = {};
       if (res.placeholders && Array.isArray(res.placeholders)) {
@@ -366,8 +371,37 @@ export default function App() {
         timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
       };
       setHistory((prev) => [historyItem, ...prev.slice(0, 24)]);
+      
     } catch (err) {
-      showToast("Gagal memproses prompt. Memori cadangan digunakan.");
+      console.error("Kesalahan API:", err);
+      // Memunculkan pesan error spesifik agar kita tahu penyebabnya
+      showToast(`⚠️ Gagal (${err.message}). Menggunakan memori cadangan.`);
+      
+      // Jeda 1.5 detik agar animasi loading tetap terlihat natural
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      const fallbackData = fallbackPromptGenerator(queryToUse, selectedPlatform, selectedMode, promptLanguage, styleOverride);
+      setAnalysisResult(fallbackData);
+      setEditablePrompt(fallbackData.generatedPrompt);
+      
+      const initialPlaceholders = {};
+      if (fallbackData.placeholders && Array.isArray(fallbackData.placeholders)) {
+        fallbackData.placeholders.forEach((item) => {
+          initialPlaceholders[item.tag] = item.defaultValue || '';
+        });
+      }
+      setPlaceholderValues(initialPlaceholders);
+      
+      const historyItem = {
+        id: Date.now(),
+        title: queryToUse,
+        category: fallbackData.category || 'GENERAL',
+        platform: selectedPlatform,
+        mode: selectedMode,
+        prompt: fallbackData.generatedPrompt,
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+      };
+      setHistory((prev) => [historyItem, ...prev.slice(0, 24)]);
     } finally {
       setIsAnalyzing(false);
     }
@@ -409,10 +443,6 @@ export default function App() {
 
   const isCurrentFavorite = favorites.some((f) => f.prompt === editablePrompt);
 
-  const getCategoryInfo = (catName) => {
-    return CATEGORIES[catName] || CATEGORIES.GENERAL;
-  };
-
   const clayBg = theme === 'dark' ? 'bg-[#0f172a] text-slate-100' : 'bg-[#e2e8f0] text-slate-800';
   
   const clayCard = theme === 'dark' 
@@ -422,10 +452,6 @@ export default function App() {
   const clayInput = theme === 'dark' 
     ? 'bg-[#0f172a] text-slate-100 rounded-2xl p-4 shadow-[inset_4px_4px_8px_rgba(0,0,0,0.4),_inset_-4px_-4px_8px_rgba(255,255,255,0.03)] focus:ring-2 focus:ring-orange-500/50 outline-none border-none transition-all' 
     : 'bg-[#e2e8f0] text-slate-800 rounded-2xl p-4 shadow-[inset_4px_4px_8px_rgba(0,0,0,0.06),_inset_-4px_-4px_8px_rgba(255,255,255,0.9)] focus:ring-2 focus:ring-orange-400/50 outline-none border-none transition-all';
-
-  const clayBtn = theme === 'dark' 
-    ? 'bg-[#334155] text-white rounded-[20px] shadow-[6px_6px_12px_rgba(0,0,0,0.25),_inset_-3px_-3px_8px_rgba(0,0,0,0.3),_inset_3px_3px_8px_rgba(255,255,255,0.05)] hover:scale-[1.02] active:scale-[0.96] transition-transform font-semibold flex items-center justify-center gap-2' 
-    : 'bg-[#f1f5f9] text-slate-800 rounded-[20px] shadow-[6px_6px_12px_rgba(0,0,0,0.06),_inset_-3px_-3px_8px_rgba(0,0,0,0.04),_inset_3px_3px_8px_rgba(255,255,255,0.9)] hover:scale-[1.02] active:scale-[0.96] transition-transform font-semibold flex items-center justify-center gap-2';
 
   const clayBtnActive = theme === 'dark'
     ? 'bg-[#f97316] text-white rounded-[20px] shadow-[inset_4px_4px_8px_rgba(0,0,0,0.3),_inset_-4px_-4px_8px_rgba(255,255,255,0.1)] font-semibold flex items-center justify-center gap-2 scale-[0.98]'
@@ -511,6 +537,7 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 flex-1 w-full space-y-10">
         
+        {}
         {activeTab === 'builder' && (
           <div className="space-y-10">
             
@@ -613,6 +640,7 @@ export default function App() {
 
             </div>
 
+            {}
             {analysisResult && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 
@@ -666,16 +694,3 @@ export default function App() {
                               className={`w-full ${clayInput}`}
                             />
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
