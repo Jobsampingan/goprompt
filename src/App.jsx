@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Sparkles,
   Copy,
   Check,
   RefreshCw,
@@ -55,275 +54,179 @@ const MODES = [
   { id: 'EXPERT', name: 'Expert', desc: 'Lengkap dengan constraints & rules' }
 ];
 
-async function callGeminiForPromptBuilder({
-  userQuery,
-  targetPlatform,
-  mode,
-  language,
-  styleModifier = null
-}) {
-  const fallback = () => {
-    const fallbackData = fallbackPromptGenerator(
-      userQuery,
-      targetPlatform,
-      mode,
-      language,
-      styleModifier
-    );
-    fallbackData._source = 'OFFLINE_FALLBACK';
-    return fallbackData;
-  };
-
+async function callGeminiForPromptBuilder({ userQuery, targetPlatform, mode, language, styleModifier = null }) {
   let apiKey = '';
-
   try {
-    apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-  } catch (error) {
-    console.warn('Gemini API key tidak dapat dibaca:', error);
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+      apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    }
+  } catch (e) {
+    apiKey = '';
   }
 
-  if (!apiKey.trim()) {
-    return fallback();
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error("Kunci API belum terbaca di Vercel");
   }
 
-  const systemInstruction = `
-Kamu adalah AI Expert Prompt Engineer untuk "Goprompt".
-Tugasmu adalah menganalisis input natural language pengguna dan menghasilkan Prompt Berkualitas Tinggi.
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey.trim()}`;
 
-ATURAN UTAMA:
-1. Pahami intent pengguna secara cerdas meskipun input sangat singkat.
-2. Klasifikasikan ke dalam salah satu kategori: DESIGN, IMAGE, VIDEO, WRITING, BUSINESS, EDUCATION, CODING, AI_PRODUCTIVITY, atau GENERAL.
-3. Deteksi Platform Target: ${targetPlatform}.
-4. Mode Detail: ${mode}.
-5. Bahasa Output Prompt: ${language === 'EN' ? 'English' : 'Bahasa Indonesia'}.
-6. Jika ada detail penting yang belum disebutkan, buat editable placeholder seperti [ NAMA BRAND ], [ TARGET AUDIENCE ], dll.
+  const systemInstruction = `Kamu adalah AI Expert Prompt Engineer untuk "Goprompt".
+Tugasmu adalah menganalisis input pengguna dan menghasilkan Prompt Berkualitas Tinggi.
+Kategori: DESIGN, IMAGE, VIDEO, WRITING, BUSINESS, EDUCATION, CODING, AI_PRODUCTIVITY, atau GENERAL.
+Platform Target: ${targetPlatform}. Mode Detail: ${mode}. Bahasa Output: ${language === 'EN' ? 'English' : 'Bahasa Indonesia'}.
+Buat editable placeholder seperti [ NAMA BRAND ], [ TARGET AUDIENCE ] jika perlu.
 
 Kembalikan respon DALAM FORMAT JSON SAJA dengan skema:
 {
   "category": "DESIGN",
   "goal": "penjelasan",
-  "outputType": "misal: Poster",
-  "detectedStyle": "misal: Modern",
+  "outputType": "Poster",
+  "detectedStyle": "Modern",
   "targetAudience": "audiens",
   "missingDetails": ["detail 1"],
   "placeholders": [
     { "tag": "[ NAMA BRAND ]", "label": "Nama Brand", "defaultValue": "Kopi Senja" }
   ],
   "generatedPrompt": "Teks prompt lengkap..."
-}
-`;
+}`;
 
   const payload = {
-    contents: [
-      {
-        parts: [{ text: `Input pengguna: "${userQuery}"` }]
-      }
-    ],
-    systemInstruction: {
-      parts: [{ text: systemInstruction }]
-    },
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
+    contents: [{ parts: [{ text: `Input pengguna: "${userQuery}"` }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    generationConfig: { responseMimeType: "application/json" }
   };
 
-  try {
-    const apiUrl =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey.trim()
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error('Gemini API Error Detail:', errorData);
-      throw new Error(`Gemini API gagal dengan status ${response.status}`);
-    }
-
-    const data = await response.json();
-    const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!jsonText) {
-      throw new Error('Respons Gemini tidak berisi teks JSON.');
-    }
-
-    const parsedData = JSON.parse(jsonText);
-
-    if (
-      !parsedData ||
-      typeof parsedData.generatedPrompt !== 'string' ||
-      !parsedData.generatedPrompt.trim()
-    ) {
-      throw new Error('Format respons Gemini tidak sesuai.');
-    }
-
-    parsedData._source = 'API_GEMINI';
-    return parsedData;
-  } catch (error) {
-    console.warn(
-      'Menggunakan generator cadangan karena Gemini gagal:',
-      error instanceof Error ? error.message : error
-    );
-    return fallback();
+  if (!response.ok) {
+    throw new Error(`Ditolak Server Google (Status ${response.status})`);
   }
+
+  const data = await response.json();
+  const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (jsonText) {
+    try {
+      const parsedData = JSON.parse(jsonText);
+      parsedData._source = 'API_GEMINI';
+      return parsedData;
+    } catch (parseErr) {
+      throw new Error("Format JSON tidak valid");
+    }
+  }
+  throw new Error("Respon AI kosong");
 }
 
 function fallbackPromptGenerator(userQuery, platform, mode, language, styleModifier) {
   const queryLower = userQuery.toLowerCase();
-
   let category = 'GENERAL';
-  if (queryLower.includes('poster') || queryLower.includes('logo') || queryLower.includes('flyer') || queryLower.includes('desain') || queryLower.includes('banner')) category = 'DESIGN';
-  else if (queryLower.includes('foto') || queryLower.includes('gambar') || queryLower.includes('portrait') || queryLower.includes('skincare') || queryLower.includes('karakter')) category = 'IMAGE';
-  else if (queryLower.includes('video') || queryLower.includes('iklan video') || queryLower.includes('animasi') || queryLower.includes('reels')) category = 'VIDEO';
-  else if (queryLower.includes('caption') || queryLower.includes('artikel') || queryLower.includes('writing') || queryLower.includes('surat') || queryLower.includes('post')) category = 'WRITING';
-  else if (queryLower.includes('bisnis') || queryLower.includes('presentasi') || queryLower.includes('strategi') || queryLower.includes('marketing') || queryLower.includes('pitch deck')) category = 'BUSINESS';
-  else if (queryLower.includes('modul') || queryLower.includes('pelajaran') || queryLower.includes('kuis') || queryLower.includes('materi')) category = 'EDUCATION';
-  else if (queryLower.includes('website') || queryLower.includes('app') || queryLower.includes('coding') || queryLower.includes('script') || queryLower.includes('python') || queryLower.includes('landing page')) category = 'CODING';
+
+  if (queryLower.includes('poster') || queryLower.includes('logo') || queryLower.includes('desain') || queryLower.includes('banner')) category = 'DESIGN';
+  else if (queryLower.includes('foto') || queryLower.includes('gambar') || queryLower.includes('portrait') || queryLower.includes('karakter')) category = 'IMAGE';
+  else if (queryLower.includes('video') || queryLower.includes('animasi') || queryLower.includes('reels')) category = 'VIDEO';
+  else if (queryLower.includes('caption') || queryLower.includes('artikel') || queryLower.includes('surat') || queryLower.includes('konten')) category = 'WRITING';
+  else if (queryLower.includes('bisnis') || queryLower.includes('strategi') || queryLower.includes('marketing')) category = 'BUSINESS';
+  else if (queryLower.includes('web') || queryLower.includes('app') || queryLower.includes('coding') || queryLower.includes('script')) category = 'CODING';
 
   const isEn = language === 'EN';
   let generatedPrompt = '';
   let placeholders = [];
-  let missingDetails = [];
 
   if (category === 'DESIGN' || category === 'IMAGE') {
     placeholders = [
-      { tag: '[ PRODUCT / BRAND NAME ]', label: 'Nama Produk / Brand', defaultValue: 'Kopi Kenangan Baru' },
-      { tag: '[ MAIN VISUAL / SUBJECT ]', label: 'Fokus Visual Utama', defaultValue: 'Segelas iced coffee latte dengan whipped cream melimpah' },
-      { tag: '[ COLOR PALETTE ]', label: 'Skema Warna', defaultValue: 'Warm Brown, Caramel Cream, & Soft Amber' },
-      { tag: '[ CALL TO ACTION ]', label: 'Teks CTA Promo', defaultValue: 'Diskon 50% Beli 1 Gratis 1 Hari Ini!' }
+      { tag: '[ NAMA BRAND / PRODUK ]', label: 'Nama Produk / Brand', defaultValue: 'Kopi Senja Utama' },
+      { tag: '[ VISUAL UTAMA ]', label: 'Fokus Visual Utama', defaultValue: userQuery },
+      { tag: '[ SKEMA WARNA ]', label: 'Skema Warna', defaultValue: 'Warm Earth Tone & Soft Gold' },
+      { tag: '[ TEKS CTA ]', label: 'Teks Call to Action', defaultValue: 'Pesan Sekarang Diskon 30%!' }
     ];
-    missingDetails = ['Aspect Ratio / Canvas Size', 'Headline Text', 'Brand Guidelines'];
 
     if (isEn) {
-      generatedPrompt = `Create a high-converting, commercial advertisement design for [ PRODUCT / BRAND NAME ].
+      generatedPrompt = `Create a high-converting commercial visual design for [ NAMA BRAND / PRODUK ].
 
-Subject: [ MAIN VISUAL / SUBJECT ]
+Main Subject: [ VISUAL UTAMA ]
 Visual Direction:
-- Style: ${styleModifier || 'Modern, ultra-clean commercial aesthetic with sharp focal contrast'}
-- Lighting: Studio lighting with appetizing warm highlight, cinematic depth of field
-- Color Palette: [ COLOR PALETTE ]
-- Typography: Bold modern sans-serif headline with high legibility and balanced hierarchy
-- Text Overlay / CTA: "[ CALL TO ACTION ]"
+- Style: ${styleModifier || 'Modern commercial aesthetic, sharp focus, studio lighting'}
+- Color Palette: [ SKEMA WARNA ]
+- Call to Action Overlay: "[ TEKS CTA ]"
+- Target Engine: ${platform} (${mode} Detail Mode)
 
-Technical Specifications:
-- Target Platform Engine: ${platform}
-- Mode Spec: ${mode === 'EXPERT' ? 'Hyper-detailed 8k render quality, professional commercial grade photography' : 'High quality standard output'}
-
-Negative Constraints: Avoid cluttered layouts, illegible typography, blurry edges, oversaturated colors, or distorted elements.`;
+Constraints: Avoid cluttered layout, distorted text, or low-resolution artifacts.`;
     } else {
-      generatedPrompt = `Buat desain poster iklan komersial profesional untuk [ PRODUCT / BRAND NAME ].
+      generatedPrompt = `Buat desain visual komersial profesional untuk [ NAMA BRAND / PRODUK ].
 
-Fokus Visual Utama: [ MAIN VISUAL / SUBJECT ]
+Fokus Visual Utama: [ VISUAL UTAMA ]
 Arahan Gaya Visual:
-- Style: ${styleModifier || 'Modern, bersih, elegan, dan estetik'}
-- Pencahayaan: Studio lighting dengan kedalaman fokus tajam
-- Skema Warna: [ COLOR PALETTE ]
-- Tipografi: Typography modern dengan hirarki visual yang jelas
-- Teks Call to Action: "[ CALL TO ACTION ]"
+- Gaya Desain: ${styleModifier || 'Modern, bersih, estetik, pencahayaan studio tajam'}
+- Palet Warna: [ SKEMA WARNA ]
+- Teks Promo / CTA: "[ TEKS CTA ]"
+- Platform Tujuan: ${platform} (Mode: ${mode})
 
-Spesifikasi Teknis:
-- Platform Tujuan: ${platform}
-- Komposisi: Produk sebagai fokus utama di tengah dengan tata letak seimbang
-
-Instruksi Tambahan: Hindari desain yang terlalu ramai, font sulit dibaca, warna kusam, atau elemen yang mengganggu hirarki visual.`;
+Instruksi Tambahan: Pastikan komposisi seimbang, tipografi mudah dibaca, dan kualitas gambar sangat tajam.`;
     }
   } else if (category === 'CODING') {
     placeholders = [
-      { tag: '[ PROJECT NAME ]', label: 'Nama Project', defaultValue: 'Interactive Portfolio Dashboard' },
-      { tag: '[ TECH STACK ]', label: 'Tech Stack', defaultValue: 'React, Tailwind CSS, Lucide Icons' },
-      { tag: '[ KEY FEATURES ]', label: 'Fitur Utama', defaultValue: 'Hero Section, Project Gallery with Filter, Dark Mode Toggle' }
+      { tag: '[ NAMA PROJECT ]', label: 'Nama Project', defaultValue: userQuery },
+      { tag: '[ TECH STACK ]', label: 'Teknologi Utama', defaultValue: 'React, Tailwind CSS, Node.js' },
+      { tag: '[ FITUR UTAMA ]', label: 'Daftar Fitur', defaultValue: 'Responsive UI, Dark Mode, Dashboard Analitik' }
     ];
-    missingDetails = ['State Management Strategy', 'Responsive Breakpoints', 'Backend API Schema'];
 
     if (isEn) {
-      generatedPrompt = `Act as a Senior Lead Software Engineer specializing in scalable full-stack development.
+      generatedPrompt = `Act as a Senior Full-Stack Developer. Build a clean, production-ready implementation for: [ NAMA PROJECT ].
 
-Project: [ PROJECT NAME ]
 Tech Stack: [ TECH STACK ]
+Key Features to Implement:
+- [ FITUR UTAMA ]
 
-Objective:
-Develop a production-ready, highly responsive application module implementing the following key features:
-- [ KEY FEATURES ]
-
-Requirements & Quality Standards:
-- Clean code architecture following SOLID & Component Modular principles
-- Seamless responsive design optimized for Mobile, Tablet, and Desktop viewports
-- Robust state management with clear input validation and error boundary handling
-
-Output Format: Provide fully working, clean, and well-commented single-file code with complete implementation (no placeholders or 'TODO' blocks).`;
+Requirements: Write modular, well-commented code optimized for ${platform} (${mode} level). Ensure responsive design and proper error handling.`;
     } else {
-      generatedPrompt = `Bertindaklah sebagai Senior Lead Software Engineer yang ahli dalam pengembangan full-stack berskala besar.
+      generatedPrompt = `Bertindaklah sebagai Senior Full-Stack Developer. Buat kode yang bersih dan siap rilis (production-ready) untuk: [ NAMA PROJECT ].
 
-Project: [ PROJECT NAME ]
 Tech Stack: [ TECH STACK ]
+Fitur Utama yang Diinginkan:
+- [ FITUR UTAMA ]
 
-Tujuan:
-Kembangkan modul aplikasi yang siap rilis (production-ready) dan sangat responsif, mengimplementasikan fitur-fitur utama berikut:
-- [ KEY FEATURES ]
-
-Kebutuhan & Standar Kualitas:
-- Arsitektur kode yang bersih (clean code) mengikuti prinsip SOLID & Modularitas Komponen
-- Desain responsif sempurna yang dioptimalkan untuk tampilan Mobile, Tablet, dan Desktop
-- Manajemen state yang kuat dengan validasi input dan penanganan error yang jelas
-
-Format Output: Berikan kode dalam satu file yang berfungsi penuh, bersih, dan diberi komentar penjelasan dengan implementasi lengkap (jangan gunakan placeholder atau blok 'TODO').`;
+Standar Kualitas: Tulis kode yang rapi, modular, responsif di semua layar, dan dioptimalkan untuk ${platform} (Level: ${mode}). Sertakan penanganan error yang baik.`;
     }
   } else {
     placeholders = [
-      { tag: '[ TARGET AUDIENCE ]', label: 'Target Audiens', defaultValue: 'Profesional Muda & Content Creator' },
-      { tag: '[ CORE VALUE / OFFER ]', label: 'Pesan Utama / Penawaran', defaultValue: 'Solusi otomatisasi AI yang menghemat waktu hingga 80%' },
-      { tag: '[ CALL TO ACTION ]', label: 'Teks CTA', defaultValue: 'Coba Gratis Sekarang & Rasakan Bedanya!' }
+      { tag: '[ TOPIK UTAMA ]', label: 'Topik / Permintaan', defaultValue: userQuery },
+      { tag: '[ TARGET AUDIENS ]', label: 'Target Audiens', defaultValue: 'Profesional Muda & Pengguna Sosmed' },
+      { tag: '[ GAYA BAHASA ]', label: 'Nada Bicara (Tone)', defaultValue: 'Persuasif, Ramah, dan Mengalir' }
     ];
-    missingDetails = ['Tone of Voice Detail', 'Content Length Limit', 'Specific Channel Rules'];
 
     if (isEn) {
-      generatedPrompt = `Act as an expert content strategist and direct-response copywriter.
+      generatedPrompt = `Act as an expert strategist and copywriter. Create high-impact content for: [ TOPIK UTAMA ].
 
-Task: Generate compelling, high-converting content for "${userQuery}".
-Target Audience: [ TARGET AUDIENCE ]
-Core Value Proposition: [ CORE VALUE / OFFER ]
-Tone & Voice: ${styleModifier || 'Persuasive, engaging, authoritative yet friendly'}
+Target Audience: [ TARGET AUDIENS ]
+Tone of Voice: [ GAYA BAHASA ]
+Platform Optimization: ${platform} (Depth: ${mode})
 
-Structure:
-1. Attention-grabbing Hook (drives curiosity or addresses immediate pain point)
-2. Relatable problem breakdown
-3. Clear solution & value proposition
-4. Strong Call to Action: "[ CALL TO ACTION ]"
-
-Constraints: Use scannable formatting, bullet points, clean spacing, and impactful typography elements.`;
+Structure: Start with a strong hook, deliver clear value points using bullet formatting, and end with a compelling Call to Action.`;
     } else {
-      generatedPrompt = `Bertindaklah sebagai ahli strategi konten (content strategist) dan copywriter persuasif (direct-response).
+      generatedPrompt = `Bertindaklah sebagai ahli strategi konten dan copywriter profesional. Buat konten berkualitas tinggi untuk: [ TOPIK UTAMA ].
 
-Tugas: Buatlah konten yang memikat dan berkonversi tinggi untuk "${userQuery}".
-Target Audiens: [ TARGET AUDIENCE ]
-Pesan Utama / Nilai Jual: [ CORE VALUE / OFFER ]
-Gaya & Nada Bahasa (Tone): ${styleModifier || 'Persuasif, menarik, berwibawa namun tetap ramah'}
+Target Audiens: [ TARGET AUDIENS ]
+Gaya Bahasa (Tone): [ GAYA BAHASA ]
+Optimasi Platform: ${platform} (Kedalaman: ${mode})
 
-Struktur Konten:
-1. Hook (Kalimat pembuka) yang menarik perhatian (memancing rasa penasaran atau menyentuh masalah utama audiens)
-2. Penjabaran masalah yang relevan (relatable)
-3. Solusi yang jelas & keunggulan yang ditawarkan
-4. Call to Action (Ajakan bertindak) yang kuat: "[ CALL TO ACTION ]"
-
-Instruksi Tambahan: Gunakan format yang mudah dibaca secara cepat (scannable), gunakan poin-poin (bullet points), spasi yang bersih, dan elemen teks yang berdampak.`;
+Struktur: Gunakan kalimat pembuka (hook) yang memikat, jabarkan poin penting dengan rapi, dan tutup dengan ajakan bertindak (Call to Action) yang kuat.`;
     }
   }
 
   return {
     category,
-    goal: `Membuat prompt ${category.toLowerCase()} untuk permintaan: "${userQuery}"`,
-    outputType: category === 'DESIGN' || category === 'IMAGE' ? 'Visual / Image Prompt' : 'Structured Text / Code Prompt',
-    detectedStyle: styleModifier || 'Profesional & Modern Minimalist',
-    targetAudience: 'Audiens Spesifik / Teridentifikasi',
-    missingDetails,
+    goal: `Merancang prompt untuk: "${userQuery}"`,
+    outputType: 'Prompt Terstruktur',
+    detectedStyle: styleModifier || 'Profesional',
+    targetAudience: 'Umum',
+    missingDetails: [],
     placeholders,
-    generatedPrompt
+    generatedPrompt,
+    _source: 'OFFLINE_FALLBACK'
   };
 }
 
@@ -346,6 +249,34 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState(null);
   const [isCopied, setIsCopied] = useState(false);
 
+  useEffect(() => {
+    try {
+      const savedHistory = localStorage.getItem('upb_history_v2');
+      if (savedHistory) setHistory(JSON.parse(savedHistory));
+      const savedFavs = localStorage.getItem('upb_favorites_v2');
+      if (savedFavs) setFavorites(JSON.parse(savedFavs));
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('upb_history_v2', JSON.stringify(history));
+    } catch (e) {}
+  }, [history]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('upb_favorites_v2', JSON.stringify(favorites));
+    } catch (e) {}
+  }, [favorites]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 5000);
+  };
+
   const copyToClipboard = (text) => {
     const textArea = document.createElement("textarea");
     textArea.value = text;
@@ -358,22 +289,9 @@ export default function App() {
     try {
       document.execCommand('copy');
     } catch (err) {
-      console.error('Oops, tidak bisa menyalin teks', err);
+      console.error('Gagal menyalin', err);
     }
     document.body.removeChild(textArea);
-  };
-
-  useEffect(() => {
-    localStorage.setItem('upb_history_v2', JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    localStorage.setItem('upb_favorites_v2', JSON.stringify(favorites));
-  }, [favorites]);
-
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4000); // 4 detik agar cukup waktu membaca
   };
 
   const handleGenerate = async (customQuery = null, styleOverride = null) => {
@@ -397,13 +315,7 @@ export default function App() {
 
       setAnalysisResult(res);
       setEditablePrompt(res.generatedPrompt);
-
-      // Notifikasi yang sangat jelas untuk tahu apa yang terjadi
-      if (res._source === 'API_GEMINI') {
-        showToast("✅ Berhasil! Prompt diracik langsung oleh AI Gemini 🚀");
-      } else {
-        showToast("⚠️ Mode Offline: Kunci API tidak terbaca, menggunakan template cadangan.");
-      }
+      showToast("✅ Berhasil! Prompt diracik langsung oleh AI Gemini 🚀");
 
       const initialPlaceholders = {};
       if (res.placeholders && Array.isArray(res.placeholders)) {
@@ -424,7 +336,31 @@ export default function App() {
       };
       setHistory((prev) => [historyItem, ...prev.slice(0, 24)]);
     } catch (err) {
-      showToast("❌ Gagal memproses. Memori cadangan digunakan.");
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      showToast(`⚠️ Mode Cadangan Aktif (${err.message})`);
+
+      const fallbackData = fallbackPromptGenerator(queryToUse, selectedPlatform, selectedMode, promptLanguage, styleOverride);
+      setAnalysisResult(fallbackData);
+      setEditablePrompt(fallbackData.generatedPrompt);
+
+      const initialPlaceholders = {};
+      if (fallbackData.placeholders && Array.isArray(fallbackData.placeholders)) {
+        fallbackData.placeholders.forEach((item) => {
+          initialPlaceholders[item.tag] = item.defaultValue || '';
+        });
+      }
+      setPlaceholderValues(initialPlaceholders);
+
+      const historyItem = {
+        id: Date.now(),
+        title: queryToUse,
+        category: fallbackData.category || 'GENERAL',
+        platform: selectedPlatform,
+        mode: selectedMode,
+        prompt: fallbackData.generatedPrompt,
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+      };
+      setHistory((prev) => [historyItem, ...prev.slice(0, 24)]);
     } finally {
       setIsAnalyzing(false);
     }
@@ -438,7 +374,7 @@ export default function App() {
       let updatedText = analysisResult.generatedPrompt;
       Object.entries(newValues).forEach(([phTag, phVal]) => {
         if (phVal.trim() !== '') {
-          updatedText = updatedText.replaceAll(phTag, phVal);
+          updatedText = updatedText.split(phTag).join(phVal);
         }
       });
       setEditablePrompt(updatedText);
@@ -449,7 +385,7 @@ export default function App() {
     if (!editablePrompt) return;
     copyToClipboard(editablePrompt);
     setIsCopied(true);
-    showToast("Prompt berhasil disalin ✓");
+    showToast("Prompt berhasil disalin ke Clipboard ✓");
     setTimeout(() => setIsCopied(false), 2500);
   };
 
@@ -466,39 +402,25 @@ export default function App() {
 
   const isCurrentFavorite = favorites.some((f) => f.prompt === editablePrompt);
 
-  const getCategoryInfo = (catName) => {
-    return CATEGORIES[catName] || CATEGORIES.GENERAL;
-  };
-
   const clayBg = theme === 'dark' ? 'bg-[#0f172a] text-slate-100' : 'bg-[#e2e8f0] text-slate-800';
-  
-  const clayCard = theme === 'dark' 
-    ? 'bg-[#1e293b] rounded-[32px] shadow-[10px_10px_20px_rgba(0,0,0,0.3),_inset_-5px_-5px_15px_rgba(0,0,0,0.2),_inset_5px_5px_15px_rgba(255,255,255,0.05)] border border-slate-700/50' 
+  const clayCard = theme === 'dark'
+    ? 'bg-[#1e293b] rounded-[32px] shadow-[10px_10px_20px_rgba(0,0,0,0.3),_inset_-5px_-5px_15px_rgba(0,0,0,0.2),_inset_5px_5px_15px_rgba(255,255,255,0.05)] border border-slate-700/50'
     : 'bg-[#f8fafc] rounded-[32px] shadow-[10px_10px_20px_rgba(0,0,0,0.05),_inset_-5px_-5px_15px_rgba(0,0,0,0.03),_inset_5px_5px_15px_rgba(255,255,255,0.8)] border border-white/50';
-
-  const clayInput = theme === 'dark' 
-    ? 'bg-[#0f172a] text-slate-100 rounded-2xl p-4 shadow-[inset_4px_4px_8px_rgba(0,0,0,0.4),_inset_-4px_-4px_8px_rgba(255,255,255,0.03)] focus:ring-2 focus:ring-orange-500/50 outline-none border-none transition-all' 
+  const clayInput = theme === 'dark'
+    ? 'bg-[#0f172a] text-slate-100 rounded-2xl p-4 shadow-[inset_4px_4px_8px_rgba(0,0,0,0.4),_inset_-4px_-4px_8px_rgba(255,255,255,0.03)] focus:ring-2 focus:ring-orange-500/50 outline-none border-none transition-all'
     : 'bg-[#e2e8f0] text-slate-800 rounded-2xl p-4 shadow-[inset_4px_4px_8px_rgba(0,0,0,0.06),_inset_-4px_-4px_8px_rgba(255,255,255,0.9)] focus:ring-2 focus:ring-orange-400/50 outline-none border-none transition-all';
-
-  const clayBtn = theme === 'dark' 
-    ? 'bg-[#334155] text-white rounded-[20px] shadow-[6px_6px_12px_rgba(0,0,0,0.25),_inset_-3px_-3px_8px_rgba(0,0,0,0.3),_inset_3px_3px_8px_rgba(255,255,255,0.05)] hover:scale-[1.02] active:scale-[0.96] transition-transform font-semibold flex items-center justify-center gap-2' 
-    : 'bg-[#f1f5f9] text-slate-800 rounded-[20px] shadow-[6px_6px_12px_rgba(0,0,0,0.06),_inset_-3px_-3px_8px_rgba(0,0,0,0.04),_inset_3px_3px_8px_rgba(255,255,255,0.9)] hover:scale-[1.02] active:scale-[0.96] transition-transform font-semibold flex items-center justify-center gap-2';
-
   const clayBtnActive = theme === 'dark'
     ? 'bg-[#f97316] text-white rounded-[20px] shadow-[inset_4px_4px_8px_rgba(0,0,0,0.3),_inset_-4px_-4px_8px_rgba(255,255,255,0.1)] font-semibold flex items-center justify-center gap-2 scale-[0.98]'
     : 'bg-[#f97316] text-white rounded-[20px] shadow-[inset_4px_4px_8px_rgba(0,0,0,0.15),_inset_-4px_-4px_8px_rgba(255,255,255,0.3)] font-semibold flex items-center justify-center gap-2 scale-[0.98]';
-
   const clayBtnPrimary = theme === 'dark'
-    ? 'bg-[#ea580c] text-white rounded-[24px] shadow-[8px_8px_16px_rgba(0,0,0,0.4),_inset_-4px_-4px_10px_rgba(154,52,18,0.8),_inset_4px_4px_10px_rgba(255,166,120,0.4)] hover:scale-[1.02] active:scale-[0.98] transition-transform font-bold flex items-center justify-center gap-2' 
+    ? 'bg-[#ea580c] text-white rounded-[24px] shadow-[8px_8px_16px_rgba(0,0,0,0.4),_inset_-4px_-4px_10px_rgba(154,52,18,0.8),_inset_4px_4px_10px_rgba(255,166,120,0.4)] hover:scale-[1.02] active:scale-[0.98] transition-transform font-bold flex items-center justify-center gap-2'
     : 'bg-[#f97316] text-white rounded-[24px] shadow-[8px_8px_16px_rgba(249,115,22,0.25),_inset_-4px_-4px_10px_rgba(194,65,12,0.4),_inset_4px_4px_10px_rgba(255,166,120,0.8)] hover:scale-[1.02] active:scale-[0.98] transition-transform font-bold flex items-center justify-center gap-2';
-
   const clayPill = theme === 'dark'
     ? 'bg-[#1e293b] rounded-full shadow-[6px_6px_12px_rgba(0,0,0,0.25),_inset_-3px_-3px_8px_rgba(0,0,0,0.3),_inset_3px_3px_8px_rgba(255,255,255,0.05)]'
     : 'bg-[#f8fafc] rounded-full shadow-[6px_6px_12px_rgba(0,0,0,0.06),_inset_-3px_-3px_8px_rgba(0,0,0,0.04),_inset_3px_3px_8px_rgba(255,255,255,0.9)]';
 
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 ${clayBg}`}>
-
       {toastMessage && (
         <div className={`fixed bottom-5 left-4 right-4 sm:left-auto sm:right-6 sm:bottom-auto sm:top-6 z-50 px-6 py-4 flex items-center gap-3 font-semibold ${clayCard}`}>
           <CheckCircle2 className="w-6 h-6 shrink-0 text-orange-500" />
@@ -507,51 +429,35 @@ export default function App() {
       )}
 
       <header className={`sticky top-0 z-40 transition-colors duration-300 ${theme === 'dark' ? 'bg-[#0f172a]/80 backdrop-blur-md' : 'bg-[#e2e8f0]/80 backdrop-blur-md'} pb-2 pt-2 rounded-b-[2rem]`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-2 sm:gap-4 overflow-x-auto no-scrollbar">
-          
-          <div 
-            onClick={() => setActiveTab('builder')}
-            className="flex items-center gap-2 sm:gap-3 cursor-pointer group shrink-0"
-          >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-2 sm:gap-4">
+          <div onClick={() => setActiveTab('builder')} className="flex items-center gap-2 sm:gap-3 cursor-pointer group shrink-0">
             <div className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center shrink-0 ${clayPill} text-orange-500`}>
               <Wand2 className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
-            <div>
-              <h1 className="font-extrabold text-lg sm:text-xl md:text-2xl tracking-tight">
-                Goprompt
-              </h1>
-            </div>
+            <h1 className="font-extrabold text-lg sm:text-xl md:text-2xl tracking-tight">Goprompt</h1>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <div className="flex items-center gap-1 sm:gap-2 bg-black/5 dark:bg-white/5 p-1 sm:p-1.5 rounded-[24px]">
               <button
                 onClick={() => setActiveTab('builder')}
-                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${
-                  activeTab === 'builder' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'
-                }`}
+                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${activeTab === 'builder' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'}`}
               >
                 <span className="hidden sm:inline font-semibold">Builder</span>
                 <Wand2 className="w-4 h-4 sm:hidden" />
               </button>
-
               <button
                 onClick={() => setActiveTab('history')}
-                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${
-                  activeTab === 'history' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'
-                }`}
+                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${activeTab === 'history' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'}`}
               >
-                <span className="hidden sm:inline font-semibold">Riwayat</span>
+                <span className="hidden sm:inline font-semibold">Riwayat ({history.length})</span>
                 <Clock className="w-4 h-4 sm:hidden" />
               </button>
-
               <button
                 onClick={() => setActiveTab('favorites')}
-                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${
-                  activeTab === 'favorites' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'
-                }`}
+                className={`px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm transition-all ${activeTab === 'favorites' ? clayBtnActive : 'hover:opacity-70 rounded-[20px]'}`}
               >
-                <span className="hidden sm:inline font-semibold">Favorit</span>
+                <span className="hidden sm:inline font-semibold">Favorit ({favorites.length})</span>
                 <Star className="w-4 h-4 sm:hidden" />
               </button>
             </div>
@@ -566,14 +472,13 @@ export default function App() {
         </div>
       </header>
 
+      {}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 flex-1 w-full space-y-10">
-        
         {activeTab === 'builder' && (
           <div className="space-y-10">
-            
             <div className="text-center max-w-3xl mx-auto space-y-4">
               <h2 className="text-4xl sm:text-6xl font-black tracking-tight leading-tight">
-                Bikin Prompt <br/><span className="text-orange-500">Gak Pakai Mikir.</span>
+                Bikin Prompt <br /><span className="text-orange-500">Gak Pakai Mikir.</span>
               </h2>
               <p className="text-base sm:text-lg font-medium text-slate-500 dark:text-slate-400">
                 AI Kami Yang Akan Merancangnya Untukmu.
@@ -581,9 +486,7 @@ export default function App() {
             </div>
 
             <div className={`p-6 sm:p-10 ${clayCard}`}>
-              
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                
                 <div className="space-y-3">
                   <label className="text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2">Target Platform</label>
                   <div className="relative">
@@ -607,9 +510,7 @@ export default function App() {
                       <button
                         key={m.id}
                         onClick={() => setSelectedMode(m.id)}
-                        className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${
-                          selectedMode === m.id ? clayBtnActive : 'hover:opacity-70'
-                        }`}
+                        className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${selectedMode === m.id ? clayBtnActive : 'hover:opacity-70'}`}
                       >
                         {m.name}
                       </button>
@@ -618,23 +519,19 @@ export default function App() {
                 </div>
 
                 <div className="space-y-3">
-                  <label className="text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2">Bahasa</label>
+                  <label className="text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2">Bahasa Output</label>
                   <div className={`grid grid-cols-2 gap-1 p-1.5 rounded-[24px] ${theme === 'dark' ? 'bg-[#0f172a] shadow-[inset_4px_4px_8px_rgba(0,0,0,0.4)]' : 'bg-[#e2e8f0] shadow-[inset_4px_4px_8px_rgba(0,0,0,0.06)]'}`}>
                     <button
                       onClick={() => setPromptLanguage('ID')}
-                      className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${
-                        promptLanguage === 'ID' ? clayBtnActive : 'hover:opacity-70'
-                      }`}
+                      className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${promptLanguage === 'ID' ? clayBtnActive : 'hover:opacity-70'}`}
                     >
-                      ID
+                      ID (Indonesia)
                     </button>
                     <button
                       onClick={() => setPromptLanguage('EN')}
-                      className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${
-                        promptLanguage === 'EN' ? clayBtnActive : 'hover:opacity-70'
-                      }`}
+                      className={`text-xs py-3 rounded-[20px] transition-all font-semibold ${promptLanguage === 'EN' ? clayBtnActive : 'hover:opacity-70'}`}
                     >
-                      EN
+                      EN (English)
                     </button>
                   </div>
                 </div>
@@ -667,17 +564,15 @@ export default function App() {
                   )}
                 </button>
               </div>
-
             </div>
 
             {analysisResult && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                
                 <div className="lg:col-span-8 space-y-6">
                   <div className={`p-6 sm:p-8 ${clayCard}`}>
-                    <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center mb-8">
+                    <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center mb-6">
                       <h3 className="font-bold text-xl flex items-center gap-2">
-                        <Terminal className="w-6 h-6 text-orange-500" /> Output Sempurna
+                        <Terminal className="w-6 h-6 text-orange-500" /> Hasil Prompt Siap Pakai
                       </h3>
                       <div className="flex gap-3 w-full sm:w-auto">
                         <button
@@ -706,7 +601,6 @@ export default function App() {
                 </div>
 
                 <div className="lg:col-span-4 space-y-6">
-                  
                   {analysisResult.placeholders && analysisResult.placeholders.length > 0 && (
                     <div className={`p-6 ${clayCard}`}>
                       <h4 className="font-bold text-lg mb-6 flex items-center gap-2">
@@ -715,7 +609,9 @@ export default function App() {
                       <div className="space-y-5">
                         {analysisResult.placeholders.map((ph, idx) => (
                           <div key={idx} className="space-y-2">
-                            <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2">{ph.label}</label>
+                            <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 pl-2">
+                              {ph.label}
+                            </label>
                             <input
                               type="text"
                               value={placeholderValues[ph.tag] || ''}
@@ -728,6 +624,87 @@ export default function App() {
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {}
+        {activeTab === 'history' && (
+          <div className={`p-6 sm:p-10 ${clayCard} space-y-6`}>
+            <div className="flex justify-between items-center">
+              <h3 className="text-2xl font-bold flex items-center gap-2">
+                <Clock className="w-6 h-6 text-orange-500" /> Riwayat Prompt
+              </h3>
+              {history.length > 0 && (
+                <button onClick={() => setHistory([])} className="text-sm text-rose-500 font-semibold flex items-center gap-1 hover:underline">
+                  <Trash2 className="w-4 h-4" /> Hapus Semua
+                </button>
+              )}
+            </div>
+            {history.length === 0 ? (
+              <p className="text-slate-500 py-8 text-center">Belum ada riwayat prompt yang dibuat.</p>
+            ) : (
+              <div className="space-y-4">
+                {history.map((item) => (
+                  <div key={item.id} className={`p-5 ${clayInput} flex flex-col sm:flex-row justify-between gap-4 items-start sm:items-center`}>
+                    <div className="space-y-1">
+                      <span className="text-xs font-bold text-orange-500">{item.platform} • {item.timestamp}</span>
+                      <h4 className="font-bold text-base">{item.title}</h4>
+                      <p className="text-xs text-slate-400 line-clamp-2 font-mono">{item.prompt}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setEditablePrompt(item.prompt);
+                        setInputQuery(item.title);
+                        setAnalysisResult({ category: item.category, generatedPrompt: item.prompt, placeholders: [] });
+                        setActiveTab('builder');
+                      }}
+                      className={`px-4 py-2 text-xs shrink-0 ${clayBtnPrimary}`}
+                    >
+                      Gunakan Lagi
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'favorites' && (
+          <div className={`p-6 sm:p-10 ${clayCard} space-y-6`}>
+            <h3 className="text-2xl font-bold flex items-center gap-2">
+              <Star className="w-6 h-6 text-orange-500" /> Prompt Favorit
+            </h3>
+            {favorites.length === 0 ? (
+              <p className="text-slate-500 py-8 text-center">Belum ada prompt yang disimpan ke favorit.</p>
+            ) : (
+              <div className="space-y-4">
+                {favorites.map((item) => (
+                  <div key={item.id} className={`p-5 ${clayInput} flex flex-col sm:flex-row justify-between gap-4 items-start sm:items-center`}>
+                    <div className="space-y-1">
+                      <h4 className="font-bold text-base">{item.title || 'Prompt Tersimpan'}</h4>
+                      <p className="text-xs text-slate-400 line-clamp-2 font-mono">{item.prompt}</p>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        onClick={() => {
+                          copyToClipboard(item.prompt);
+                          showToast("Prompt favorit disalin ✓");
+                        }}
+                        className={`px-4 py-2 text-xs ${clayBtnPrimary}`}
+                      >
+                        Copy
+                      </button>
+                      <button
+                        onClick={() => toggleFavorite(item)}
+                        className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
